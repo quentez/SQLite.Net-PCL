@@ -153,6 +153,22 @@ namespace SQLite.Net.Async
             }, CancellationToken.None, _taskCreationOptions, _taskScheduler ?? TaskScheduler.Default);
         }
 
+        public Task<int> InsertOrReplaceAsync(object item)
+        {
+            if (item == null)
+            {
+                throw new ArgumentNullException("item");
+            }
+            return Task.Factory.StartNew(() =>
+            {
+                SQLiteConnectionWithLock conn = GetConnection();
+                using (conn.Lock())
+                {
+                    return conn.InsertOrReplace(item);
+                }
+            }, CancellationToken.None, _taskCreationOptions, _taskScheduler ?? TaskScheduler.Default);
+        }
+
         public Task<int> UpdateAsync(object item)
         {
             if (item == null)
