@@ -3,16 +3,19 @@ using NUnit.Framework;
 using SQLite.Net.Attributes;
 
 #if __WIN32__
-using SQLitePlatformTest=SQLite.Net.Platform.Win32.SQLitePlatformWin32;
-#elif NETFX_CORE
-using SQLitePlatformTest = SQLite.Net.Platform.WinRT.SQLitePlatformWinRT;
+using SQLitePlatformTest = SQLite.Net.Platform.Win32.SQLitePlatformWin32;
 #elif WINDOWS_PHONE
 using SQLitePlatformTest = SQLite.Net.Platform.WindowsPhone8.SQLitePlatformWP8;
+#elif __WINRT__
+using SQLitePlatformTest = SQLite.Net.Platform.WinRT.SQLitePlatformWinRT;
 #elif __IOS__
 using SQLitePlatformTest = SQLite.Net.Platform.XamarinIOS.SQLitePlatformIOS;
 #elif __ANDROID__
 using SQLitePlatformTest = SQLite.Net.Platform.XamarinAndroid.SQLitePlatformAndroid;
+#else
+using SQLitePlatformTest = SQLite.Net.Platform.Generic.SQLitePlatformGeneric;
 #endif
+
 
 namespace SQLite.Net.Tests
 {
@@ -77,6 +80,45 @@ namespace SQLite.Net.Tests
             {
                 return ID.GetHashCode() + StringData.GetHashCode();
             }
+        }
+
+        [Test]
+        public void NullableScalarInt()
+        {
+            var db = new SQLiteConnection(new SQLitePlatformTest(), TestPath.GetTempFileName());
+            db.CreateTable<NullableIntClass>();
+
+            var withNull = new NullableIntClass
+            {
+                NullableInt = null
+            };
+            var with0 = new NullableIntClass
+            {
+                NullableInt = 0
+            };
+            var with1 = new NullableIntClass
+            {
+                NullableInt = 1
+            };
+            var withMinus1 = new NullableIntClass
+            {
+                NullableInt = -1
+            };
+
+            db.Insert(withNull);
+            db.Insert(with0);
+            db.Insert(with1);
+            db.Insert(withMinus1);
+
+            var actualShouldBeNull   = db.ExecuteScalar<int?>("select NullableInt from NullableIntClass order by ID limit 1");
+            var actualShouldBe0      = db.ExecuteScalar<int?>("select NullableInt from NullableIntClass order by ID limit 1 offset 1");
+            var actualShouldBe1      = db.ExecuteScalar<int?>("select NullableInt from NullableIntClass order by ID limit 1 offset 2");
+            var actualShouldBeMinus1 = db.ExecuteScalar<int?>("select NullableInt from NullableIntClass order by ID limit 1 offset 3");
+
+            Assert.AreEqual(null, actualShouldBeNull);
+            Assert.AreEqual(0, actualShouldBe0);
+            Assert.AreEqual(1, actualShouldBe1);
+            Assert.AreEqual(-1, actualShouldBeMinus1);
         }
 
         [Test]

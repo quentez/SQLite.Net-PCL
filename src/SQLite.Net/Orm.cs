@@ -31,13 +31,13 @@ namespace SQLite.Net
 {
     public static class Orm
     {
-        public const int DefaultMaxStringLength = 140;
         public const string ImplicitPkName = "Id";
         public const string ImplicitIndexSuffix = "Id";
 
-        public static string SqlDecl(TableMapping.Column p, bool storeDateTimeAsTicks, IBlobSerializer serializer)
+        public static string SqlDecl(TableMapping.Column p, bool storeDateTimeAsTicks, IBlobSerializer serializer,
+                                     IDictionary<Type, string> extraTypeMappings)
         {
-            string decl = "\"" + p.Name + "\" " + SqlType(p, storeDateTimeAsTicks, serializer) + " ";
+            string decl = "\"" + p.Name + "\" " + SqlType(p, storeDateTimeAsTicks, serializer, extraTypeMappings) + " ";
 
             if (p.IsPK)
             {
@@ -54,49 +54,84 @@ namespace SQLite.Net
             if (!string.IsNullOrEmpty(p.Collation))
             {
                 decl += "collate " + p.Collation + " ";
+                
+            }
+            if (p.DefaultValue != null)
+            {
+                decl += "default('" + p.DefaultValue + "') ";
             }
 
             return decl;
         }
 
-        public static string SqlType(TableMapping.Column p, bool storeDateTimeAsTicks, IBlobSerializer serializer)
+        public static string SqlType(TableMapping.Column p, bool storeDateTimeAsTicks,
+                                     IBlobSerializer serializer,
+                                     IDictionary<Type, string> extraTypeMappings)
         {
             Type clrType = p.ColumnType;
-            if (clrType == typeof (Boolean) || clrType == typeof (Byte) || clrType == typeof (UInt16) ||
-                clrType == typeof (SByte) || clrType == typeof (Int16) || clrType == typeof (Int32))
+            var interfaces = clrType.GetTypeInfo().ImplementedInterfaces.ToList();
+
+            string extraMapping;
+            if (extraTypeMappings.TryGetValue(clrType, out extraMapping))
+            {
+                return extraMapping;
+            }
+
+            if (clrType == typeof(Boolean) || clrType == typeof(Byte) || clrType == typeof(UInt16) ||
+                clrType == typeof(SByte) || clrType == typeof(Int16) || clrType == typeof(Int32) ||
+                interfaces.Contains(typeof(ISerializable<Boolean>)) ||
+                interfaces.Contains(typeof(ISerializable<Byte>)) ||
+                interfaces.Contains(typeof(ISerializable<UInt16>)) ||
+                interfaces.Contains(typeof(ISerializable<SByte>)) ||
+                interfaces.Contains(typeof(ISerializable<Int16>)) ||
+                interfaces.Contains(typeof(ISerializable<Int32>)))
             {
                 return "integer";
             }
-            if (clrType == typeof (UInt32) || clrType == typeof (Int64))
+            if (clrType == typeof(UInt32) || clrType == typeof(Int64) ||
+                interfaces.Contains(typeof(ISerializable<UInt32>)) ||
+                interfaces.Contains(typeof(ISerializable<Int64>)) ||
+                interfaces.Contains(typeof(ISerializable<UInt64>)))
             {
                 return "bigint";
             }
-            if (clrType == typeof (Single) || clrType == typeof (Double) || clrType == typeof (Decimal))
+            if (clrType == typeof(Single) || clrType == typeof(Double) || clrType == typeof(Decimal) ||
+                interfaces.Contains(typeof(ISerializable<Single>)) ||
+                interfaces.Contains(typeof(ISerializable<Double>)) ||
+                interfaces.Contains(typeof(ISerializable<Decimal>)))
             {
                 return "float";
             }
-            if (clrType == typeof (String))
+            if (clrType == typeof(String) || interfaces.Contains(typeof(ISerializable<String>)))
             {
-                int len = p.MaxStringLength;
-                return "varchar(" + len + ")";
+                int? len = p.MaxStringLength;
+
+                if (len.HasValue)
+                    return "varchar(" + len.Value + ")";
+
+                return "varchar";
             }
-            if (clrType == typeof (TimeSpan))
+            if (clrType == typeof(TimeSpan) || interfaces.Contains(typeof(ISerializable<TimeSpan>)))
             {
                 return "bigint";
             }
-            if (clrType == typeof (DateTime))
+            if (clrType == typeof(DateTime) || interfaces.Contains(typeof(ISerializable<DateTime>)))
             {
                 return storeDateTimeAsTicks ? "bigint" : "datetime";
             }
-            if (clrType.IsEnum)
+            if (clrType == typeof(DateTimeOffset))
+            {
+                return "bigint";
+            }
+            if (clrType.GetTypeInfo().IsEnum)
             {
                 return "integer";
             }
-            if (clrType == typeof (byte[]))
+            if (clrType == typeof(byte[]) || interfaces.Contains(typeof(ISerializable<byte[]>)))
             {
                 return "blob";
             }
-            if (clrType == typeof (Guid))
+            if (clrType == typeof(Guid) || interfaces.Contains(typeof(ISerializable<Guid>)))
             {
                 return "varchar(36)";
             }
@@ -109,40 +144,65 @@ namespace SQLite.Net
 
         public static bool IsPK(MemberInfo p)
         {
-            object[] attrs = p.GetCustomAttributes(typeof (PrimaryKeyAttribute), true);
-            return attrs.Length > 0;
+            return p.GetCustomAttributes<PrimaryKeyAttribute>().Any();
         }
 
         public static string Collation(MemberInfo p)
         {
-            object[] attrs = p.GetCustomAttributes(typeof (CollationAttribute), true);
-            if (attrs.Length > 0)
+            foreach (var attribute in p.CustomAttributes.Where(attribute => attribute.AttributeType == typeof(CollationAttribute)))
             {
-                return ((CollationAttribute) attrs[0]).Value;
+                return (string)attribute.ConstructorArguments[0].Value;
             }
             return string.Empty;
         }
 
         public static bool IsAutoInc(MemberInfo p)
         {
-            object[] attrs = p.GetCustomAttributes(typeof (AutoIncrementAttribute), true);
-            return attrs.Length > 0;
+            return p.GetCustomAttributes<AutoIncrementAttribute>().Any();
         }
 
         public static IEnumerable<IndexedAttribute> GetIndices(MemberInfo p)
         {
-            object[] attrs = p.GetCustomAttributes(typeof (IndexedAttribute), true);
-            return attrs.Cast<IndexedAttribute>();
+            return p.GetCustomAttributes<IndexedAttribute>();
         }
 
-        public static int MaxStringLength(PropertyInfo p)
+        public static int? MaxStringLength(PropertyInfo p)
         {
-            object[] attrs = p.GetCustomAttributes(typeof (MaxLengthAttribute), true);
-            if (attrs.Length > 0)
+            foreach (var attribute in p.CustomAttributes.Where(a=>a.AttributeType==typeof(MaxLengthAttribute)))
             {
-                return ((MaxLengthAttribute) attrs[0]).Value;
+                return (int) attribute.ConstructorArguments[0].Value;
             }
-            return DefaultMaxStringLength;
+            return null;
         }
+
+        public static object GetDefaultValue(PropertyInfo p)
+        {
+            foreach (var attribute in p.CustomAttributes.Where(a => a.AttributeType == typeof (DefaultAttribute)))
+            {
+                try
+                {
+                    var useProp = (bool) attribute.ConstructorArguments[0].Value;
+
+                    if (!useProp)
+                        return Convert.ChangeType(attribute.ConstructorArguments[0].Value, p.PropertyType);
+
+                    var obj = Activator.CreateInstance(p.DeclaringType);
+                    return p.GetValue(obj);
+
+                }
+                catch (Exception exception)
+                {
+                    throw new Exception("Unable to convert " + attribute.ConstructorArguments[0].Value + " to type " + p.PropertyType, exception);
+                }
+            }
+            return null;
+        }
+
+        public static bool IsMarkedNotNull(MemberInfo p)
+        {
+            var attrs = p.GetCustomAttributes<NotNullAttribute>(true);
+            return attrs.Any();
+        }
+
     }
 }

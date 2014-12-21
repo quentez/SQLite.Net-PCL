@@ -46,9 +46,9 @@ namespace SQLite.Net
         ///     Used to list some code that we want the MonoTouch linker
         ///     to see, but that we never want to actually execute.
         /// </summary>
-#pragma warning disable 649
+        #pragma warning disable 649
         private static bool _preserveDuringLinkMagic;
-#pragma warning restore 649
+        #pragma warning restore 649
 
         private readonly Random _rand = new Random();
 
@@ -87,9 +87,13 @@ namespace SQLite.Net
         ///     Blob serializer to use for storing undefined and complex data structures. If left null
         ///     these types will thrown an exception as usual.
         /// </param>
-        public SQLiteConnection(ISQLitePlatform sqlitePlatform, string databasePath, bool storeDateTimeAsTicks = false, IBlobSerializer serializer = null)
+        /// <param name="extraTypeMappings">
+        ///     Any extra type mappings that you wish to use for overriding the default for creating
+        ///     column definitions for SQLite DDL in the class Orm (snake in Swedish).
+        /// </param>
+        public SQLiteConnection(ISQLitePlatform sqlitePlatform, string databasePath, bool storeDateTimeAsTicks = false, IBlobSerializer serializer = null, IDictionary<Type, string> extraTypeMappings = null)
             : this(
-                sqlitePlatform, databasePath, SQLiteOpenFlags.ReadWrite | SQLiteOpenFlags.Create, storeDateTimeAsTicks, serializer)
+                sqlitePlatform, databasePath, SQLiteOpenFlags.ReadWrite | SQLiteOpenFlags.Create, storeDateTimeAsTicks, serializer, extraTypeMappings)
         {
         }
 
@@ -112,11 +116,16 @@ namespace SQLite.Net
         ///     Blob serializer to use for storing undefined and complex data structures. If left null
         ///     these types will thrown an exception as usual.
         /// </param>
+        /// <param name="extraTypeMappings">
+        ///     Any extra type mappings that you wish to use for overriding the default for creating
+        ///     column definitions for SQLite DDL in the class Orm (snake in Swedish).
+        /// </param>
         public SQLiteConnection(ISQLitePlatform sqlitePlatform, string databasePath, SQLiteOpenFlags openFlags,
-            bool storeDateTimeAsTicks = false, IBlobSerializer serializer = null)
+                                bool storeDateTimeAsTicks = false, IBlobSerializer serializer = null,
+                                IDictionary<Type, string> extraTypeMappings = null)
         {
+            ExtraTypeMappings = extraTypeMappings ?? new Dictionary<Type, string>();
             Serializer = serializer;
-
             Platform = sqlitePlatform;
 
             if (string.IsNullOrEmpty(databasePath))
@@ -128,7 +137,7 @@ namespace SQLite.Net
 
             IDbHandle handle;
             byte[] databasePathAsBytes = GetNullTerminatedUtf8(DatabasePath);
-            Result r = Platform.SQLiteApi.Open(databasePathAsBytes, out handle, (int) openFlags, IntPtr.Zero);
+            Result r = Platform.SQLiteApi.Open(databasePathAsBytes, out handle, (int)openFlags, IntPtr.Zero);
 
             Handle = handle;
             if (r != Result.OK)
@@ -154,6 +163,8 @@ namespace SQLite.Net
 
         public bool StoreDateTimeAsTicks { get; private set; }
 
+        public IDictionary<Type, string> ExtraTypeMappings { get; private set; }
+
         /// <summary>
         ///     Sets a busy handler to sleep the specified amount of time when a table is locked.
         ///     The handler will sleep multiple times until a total time of <see cref="BusyTimeout" /> has accumulated.
@@ -166,7 +177,7 @@ namespace SQLite.Net
                 _busyTimeout = value;
                 if (Handle != NullHandle)
                 {
-                    Platform.SQLiteApi.BusyTimeout(Handle, (int) _busyTimeout.TotalMilliseconds);
+                    Platform.SQLiteApi.BusyTimeout(Handle, (int)_busyTimeout.TotalMilliseconds);
                 }
             }
         }
@@ -251,7 +262,7 @@ namespace SQLite.Net
         /// </returns>
         public TableMapping GetMapping<T>()
         {
-            return GetMapping(typeof (T));
+            return GetMapping(typeof(T));
         }
 
         /// <summary>
@@ -259,7 +270,7 @@ namespace SQLite.Net
         /// </summary>
         public int DropTable<T>()
         {
-            TableMapping map = GetMapping(typeof (T));
+            TableMapping map = GetMapping(typeof(T));
 
             string query = string.Format("drop table if exists \"{0}\"", map.TableName);
 
@@ -277,7 +288,7 @@ namespace SQLite.Net
         /// </returns>
         public int CreateTable<T>(CreateFlags createFlags = CreateFlags.None)
         {
-            return CreateTable(typeof (T), createFlags);
+            return CreateTable(typeof(T), createFlags);
         }
 
         /// <summary>
@@ -305,7 +316,7 @@ namespace SQLite.Net
             }
             string query = "create table if not exists \"" + map.TableName + "\"(\n";
 
-            IEnumerable<string> decls = map.Columns.Select(p => Orm.SqlDecl(p, StoreDateTimeAsTicks, this.Serializer));
+            IEnumerable<string> decls = map.Columns.Select(p => Orm.SqlDecl(p, StoreDateTimeAsTicks, this.Serializer, this.ExtraTypeMappings));
             string decl = string.Join(",\n", decls.ToArray());
             query += decl;
             query += ")";
@@ -352,11 +363,10 @@ namespace SQLite.Net
                 }
             }
 
-            foreach (string indexName in indexes.Keys)
+            foreach (var indexName in indexes.Keys)
             {
-                IndexInfo index = indexes[indexName];
-                string columns = String.Join("\",\"",
-                    index.Columns.OrderBy(i => i.Order).Select(i => i.ColumnName).ToArray());
+                var index = indexes[indexName];
+                var columns = index.Columns.OrderBy(i => i.Order).Select(i => i.ColumnName).ToArray();
                 count += CreateIndex(indexName, index.TableName, columns, index.Unique);
             }
 
@@ -364,7 +374,21 @@ namespace SQLite.Net
         }
 
         /// <summary>
-        ///     Creates an index for the specified table and column.
+        /// Creates an index for the specified table and columns.
+        /// </summary>
+        /// <param name="indexName">Name of the index to create</param>
+        /// <param name="tableName">Name of the database table</param>
+        /// <param name="columnNames">An array of column names to index</param>
+        /// <param name="unique">Whether the index should be unique</param>
+        public int CreateIndex(string indexName, string tableName, string[] columnNames, bool unique = false)
+        {
+            const string sqlFormat = "create {2} index if not exists \"{3}\" on \"{0}\"(\"{1}\")";
+            var sql = String.Format(sqlFormat, tableName, string.Join("\", \"", columnNames), unique ? "unique" : "", indexName);
+            return Execute(sql);
+        }
+
+        /// <summary>
+        /// Creates an index for the specified table and column.
         /// </summary>
         /// <param name="indexName">Name of the index to create</param>
         /// <param name="tableName">Name of the database table</param>
@@ -372,21 +396,29 @@ namespace SQLite.Net
         /// <param name="unique">Whether the index should be unique</param>
         public int CreateIndex(string indexName, string tableName, string columnName, bool unique = false)
         {
-            const string sqlFormat = "create {2} index if not exists \"{3}\" on \"{0}\"(\"{1}\")";
-            string sql = String.Format(sqlFormat, tableName, columnName, unique ? "unique" : "", indexName);
-            return Execute(sql);
+            return CreateIndex(indexName, tableName, new string[] { columnName }, unique);
         }
 
         /// <summary>
-        ///     Creates an index for the specified table and column.
+        /// Creates an index for the specified table and column.
         /// </summary>
         /// <param name="tableName">Name of the database table</param>
         /// <param name="columnName">Name of the column to index</param>
         /// <param name="unique">Whether the index should be unique</param>
         public int CreateIndex(string tableName, string columnName, bool unique = false)
         {
-            return CreateIndex(string.Concat(tableName, "_", columnName.Replace("\",\"", "_")), tableName, columnName,
-                unique);
+            return CreateIndex(tableName + "_" + columnName, tableName, columnName, unique);
+        }
+
+        /// <summary>
+        /// Creates an index for the specified table and columns.
+        /// </summary>
+        /// <param name="tableName">Name of the database table</param>
+        /// <param name="columnNames">An array of column names to index</param>
+        /// <param name="unique">Whether the index should be unique</param>
+        public int CreateIndex(string tableName, string[] columnNames, bool unique = false)
+        {
+            return CreateIndex(tableName + "_" + string.Join("_", columnNames), tableName, columnNames, unique);
         }
 
         /// <summary>
@@ -401,7 +433,7 @@ namespace SQLite.Net
             MemberExpression mx;
             if (property.Body.NodeType == ExpressionType.Convert)
             {
-                mx = ((UnaryExpression) property.Body).Operand as MemberExpression;
+                mx = ((UnaryExpression)property.Body).Operand as MemberExpression;
             }
             else
             {
@@ -453,7 +485,7 @@ namespace SQLite.Net
             foreach (TableMapping.Column p in toBeAdded)
             {
                 string addCol = "alter table \"" + map.TableName + "\" add column " +
-                                Orm.SqlDecl(p, StoreDateTimeAsTicks, this.Serializer);
+                                Orm.SqlDecl(p, StoreDateTimeAsTicks, this.Serializer, this.ExtraTypeMappings);
                 Execute(addCol);
             }
         }
@@ -691,7 +723,7 @@ namespace SQLite.Net
         /// </returns>
         public T Get<T>(object pk) where T : new()
         {
-            TableMapping map = GetMapping(typeof (T));
+            TableMapping map = GetMapping(typeof(T));
             return Query<T>(map.GetByPrimaryKeySql, pk).First();
         }
 
@@ -725,7 +757,7 @@ namespace SQLite.Net
         /// </returns>
         public T Find<T>(object pk) where T : new()
         {
-            TableMapping map = GetMapping(typeof (T));
+            TableMapping map = GetMapping(typeof(T));
             return Query<T>(map.GetByPrimaryKeySql, pk).FirstOrDefault();
         }
 
@@ -1113,6 +1145,32 @@ namespace SQLite.Net
         }
 
         /// <summary>
+        ///     Inserts all specified objects.
+        ///     For each insertion, if a UNIQUE 
+        ///     constraint violation occurs with
+        ///     some pre-existing object, this function
+        ///     deletes the old object.
+        /// </summary>
+        /// <param name="objects">
+        ///     An <see cref="IEnumerable" /> of the objects to insert or replace.
+        /// </param>
+        /// <returns>
+        ///     The total number of rows modified.
+        /// </returns>
+        public int InsertOrReplaceAll(IEnumerable objects)
+        {
+            int c = 0;
+            RunInTransaction(() =>
+            {
+                foreach (object r in objects)
+                {
+                    c += InsertOrReplace(r);
+                }
+            });
+            return c;
+        }
+
+        /// <summary>
         ///     Inserts the given object and retrieves its
         ///     auto incremented primary key if it has one.
         /// </summary>
@@ -1149,6 +1207,35 @@ namespace SQLite.Net
         public int InsertOrReplace(object obj, Type objType)
         {
             return Insert(obj, "OR REPLACE", objType);
+        }
+
+        /// <summary>
+        ///     Inserts all specified objects.
+        ///     For each insertion, if a UNIQUE 
+        ///     constraint violation occurs with
+        ///     some pre-existing object, this function
+        ///     deletes the old object.
+        /// </summary>
+        /// <param name="objects">
+        ///     An <see cref="IEnumerable" /> of the objects to insert or replace.
+        /// </param>
+        /// <param name="objType">
+        ///     The type of objects to insert or replace.
+        /// </param>
+        /// <returns>
+        ///     The total number of rows modified.
+        /// </returns>
+        public int InsertOrReplaceAll(IEnumerable objects, Type objType)
+        {
+            int c = 0;
+            RunInTransaction(() =>
+            {
+                foreach (object r in objects)
+                {
+                    c += InsertOrReplace(r, objType);
+                }
+            });
+            return c;
         }
 
         /// <summary>
@@ -1201,7 +1288,7 @@ namespace SQLite.Net
 
             if (map.PK != null && map.PK.IsAutoGuid)
             {
-                PropertyInfo prop = objType.GetProperty(map.PK.PropertyName);
+                PropertyInfo prop = objType.GetRuntimeProperty(map.PK.PropertyName);
                 if (prop != null)
                 {
                     if (prop.GetValue(obj, null).Equals(Guid.Empty))
@@ -1221,7 +1308,19 @@ namespace SQLite.Net
             }
 
             PreparedSqlLiteInsertCommand insertCmd = map.GetInsertCommand(this, extra);
-            int count = insertCmd.ExecuteNonQuery(vals);
+            int count;
+            try
+            {
+                count = insertCmd.ExecuteNonQuery(vals);
+            }
+            catch (SQLiteException ex)
+            {
+                if (Platform.SQLiteApi.ExtendedErrCode(this.Handle) == ExtendedResult.ConstraintNotNull)
+                {
+                    throw NotNullConstraintViolationException.New(ex.Result, ex.Message, map, obj);
+                }
+                throw;
+            }
 
             if (map.HasAutoIncPK)
             {
@@ -1268,6 +1367,7 @@ namespace SQLite.Net
         /// </returns>
         public int Update(object obj, Type objType)
         {
+            int rowsAffected = 0;
             if (obj == null || objType == null)
             {
                 return 0;
@@ -1283,16 +1383,30 @@ namespace SQLite.Net
             }
 
             IEnumerable<TableMapping.Column> cols = from p in map.Columns
-                where p != pk
-                select p;
+                                                             where p != pk
+                                                             select p;
             IEnumerable<object> vals = from c in cols
-                select c.GetValue(obj);
+                                                select c.GetValue(obj);
             var ps = new List<object>(vals);
             ps.Add(pk.GetValue(obj));
             string q = string.Format("update \"{0}\" set {1} where {2} = ? ", map.TableName,
-                string.Join(",", (from c in cols
-                    select "\"" + c.Name + "\" = ? ").ToArray()), pk.Name);
-            return Execute(q, ps.ToArray());
+                           string.Join(",", (from c in cols
+                                              select "\"" + c.Name + "\" = ? ").ToArray()), pk.Name);
+            try
+            {
+                rowsAffected = Execute(q, ps.ToArray());
+            }
+            catch (SQLiteException ex)
+            {
+                if (ex.Result == Result.Constraint && Platform.SQLiteApi.ExtendedErrCode(Handle) == ExtendedResult.ConstraintNotNull)
+                {
+                    throw NotNullConstraintViolationException.New(ex, map, obj);
+                }
+
+                throw ex;
+            }
+
+            return rowsAffected;
         }
 
         /// <summary>
@@ -1352,7 +1466,7 @@ namespace SQLite.Net
         /// </typeparam>
         public int Delete<T>(object primaryKey)
         {
-            TableMapping map = GetMapping(typeof (T));
+            TableMapping map = GetMapping(typeof(T));
             TableMapping.Column pk = map.PK;
             if (pk == null)
             {
@@ -1375,7 +1489,7 @@ namespace SQLite.Net
         /// </typeparam>
         public int DeleteAll<T>()
         {
-            TableMapping map = GetMapping(typeof (T));
+            TableMapping map = GetMapping(typeof(T));
             string query = string.Format("delete from \"{0}\"", map.TableName);
             return Execute(query);
         }
@@ -1420,19 +1534,19 @@ namespace SQLite.Net
 
         public class ColumnInfo
         {
-//			public int cid { get; set; }
+            //			public int cid { get; set; }
 
             [Column("name")]
             public string Name { get; set; }
 
-//			[Column ("type")]
-//			public string ColumnType { get; set; }
+            //			[Column ("type")]
+            //			public string ColumnType { get; set; }
 
-//			public int notnull { get; set; }
+            public int notnull { get; set; }
 
-//			public string dflt_value { get; set; }
+            //			public string dflt_value { get; set; }
 
-//			public int pk { get; set; }
+            //			public int pk { get; set; }
 
             public override string ToString()
             {
